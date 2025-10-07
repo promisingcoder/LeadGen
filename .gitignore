@@ -1,0 +1,15 @@
+# Python virtual environments
+.venv/
+
+# Environment and secret configuration
+.env
+
+# Python cache and bytecode
+__pycache__/
+*.pyc
+
+# Local run artifacts
+leads*.json
+
+# Crawl4AI caches or temp data
+.crawl4ai-cache/
