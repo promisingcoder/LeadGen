@@ -124,6 +124,32 @@ def _deduplicate_contacts(contacts: Iterable[ContactRecord]) -> List[ContactReco
     return list(merged.values())
 
 
+def _collect_wayback_targets(
+    business_website: Optional[str],
+    internal_links: Iterable[str],
+    external_links: Iterable[str],
+) -> List[str]:
+    """Return unique http(s) URLs that should be enriched via Wayback."""
+
+    urls: set[str] = set()
+
+    def _consider(url: Optional[str]) -> None:
+        if not url:
+            return
+        if not url.startswith(("http://", "https://")):
+            return
+        urls.add(url)
+
+    _consider(business_website)
+
+    for link in internal_links:
+        _consider(link)
+    for link in external_links:
+        _consider(link)
+
+    return list(urls)
+
+
 class LeadHarvestPipeline:
     """Coordinate business discovery, contact extraction, and persistence."""
 
@@ -169,14 +195,21 @@ class LeadHarvestPipeline:
                     )
                     contacts.extend(surface_contacts)
 
-                    snapshots = await discover_snapshots(business.website, crawler)
-                    for snapshot in snapshots:
-                        archival_contacts = await extract_contacts_from_snapshot(
-                            business=business,
-                            snapshot=snapshot,
-                            crawler=crawler,
-                        )
-                        contacts.extend(archival_contacts)
+                    wayback_targets = _collect_wayback_targets(
+                        business.website,
+                        link_sets.get("internal", []) or [],
+                        link_sets.get("external", []) or [],
+                    )
+
+                    for target_url in wayback_targets:
+                        snapshots = await discover_snapshots(target_url, crawler)
+                        for snapshot in snapshots:
+                            archival_contacts = await extract_contacts_from_snapshot(
+                                business=business,
+                                snapshot=snapshot,
+                                crawler=crawler,
+                            )
+                            contacts.extend(archival_contacts)
 
                 deduped = _deduplicate_contacts(contacts)
                 contact_map[business.name] = deduped

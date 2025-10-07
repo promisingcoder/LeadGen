@@ -1,18 +1,18 @@
 # Lead Harvest Pipeline
 
-Automated workflow that discovers businesses from Google Maps, crawls their digital surface area with **Crawl4AI**, enriches contact data with **GPT-4o**, follows important external profiles, and persists findings to Supabase. The pipeline intentionally avoids CSS selectors and regex-based scraping—every extraction step relies on LLM reasoning.
+Automated workflow that discovers businesses from Google Maps, crawls their digital surface area with **Crawl4AI**, enriches contact data with **GPT-4o-mini**, follows important external profiles, and persists findings to Supabase. The pipeline intentionally avoids CSS selectors and regex-based scraping—every extraction step relies on LLM reasoning and prompt-crafted extraction schemas.
 
 ## Features
-- Google Maps semantic extraction for business listings.
+- Google Maps semantic extraction via trimmed `APP_INITIALIZATION_STATE` payloads processed by GPT-4o-mini.
 - Intelligent link scoring to prioritize contact/team/leadership pages.
-- Person-level contact parsing (names, roles, emails, phones, socials).
-- External network enrichment (LinkedIn, Twitter, etc.).
-- Wayback Machine snapshot traversal to recover historical details.
+- Person-level contact parsing (names, roles, emails, phones, socials) entirely through LLM extraction—no regex/selectors.
+- External network enrichment (LinkedIn, Twitter/X, YouTube, etc.).
+- Wayback Machine snapshot traversal for every crawled internal/external URL (basic validation done; see limitations).
 - Native Supabase upserts for business and contact tables with deduplication and field-level enrichment.
 
 ## Requirements
 - Python 3.10+
-- Access to the internet (blocked in this environment).
+- Access to the internet (blocked in some testing environments).
 - API keys:
   - `OPENAI_API_KEY` (GPT-4o or compatible model).
   - `SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY` (or `SUPABASE_ANON_KEY` for testing).
@@ -52,7 +52,7 @@ export CRAWL_USE_CACHE="false"
 python3 main.py "lawyers in New York, NY" --output leads.json
 ```
 
-The command prints the structured contact map to stdout and (optionally) stores it to a JSON file. Results are also upserted into Supabase when the database credentials are provided.
+The command prints the structured contact map to stdout and (optionally) stores it to a JSON file. Results are also upserted into Supabase when the database credentials are provided. Use `--max-businesses N` to limit processing during validation, e.g. `--max-businesses 1` for a single firm trial.
 
 ## Supabase Schema Expectations
 
@@ -96,13 +96,17 @@ create unique index contacts_dedupe_key
 ```
 
 ## Wayback Machine Behavior
-- The crawler visits `https://web.archive.org/web/*/<URL>` and uses GPT-4o to select the best snapshots within the configured time window.
+- For every live URL we crawl (homepage, prioritized internal links, and high-signal external profiles), the pipeline also visits `https://web.archive.org/web/*/<URL>` and uses GPT-4o-mini to select the best historical snapshots within the configured time window.
 - Each snapshot is crawled with the same person-level extraction strategy used on the live site.
 - Contacts obtained from archives are flagged with `source_type = "wayback"` and carry a `snapshot_timestamp`.
+- **Current status:** Basic snapshot selection is functional but not stress-tested across a wide range of sites. Expect occasional misses or low-confidence results until further tuning.
 
 ## Notes & Limitations
-- This environment cannot perform network calls; run the workflow on a machine with open network access.
+- The pipeline relies on GPT-driven extraction only—no CSS selectors or regex are used for data parsing.
+- Runs have been validated end-to-end on a single firm (Google Maps → site + socials → Supabase). Scale cautiously and monitor OpenAI rate limits.
+- Wayback-derived data is experimental; verify archival contacts manually before consuming them in production workflows.
+- Heavy Wayback usage can slow runs considerably—keep `WAYBACK_SNAPSHOT_LIMIT` tuned appropriately for your rate/usage budget.
 - Google Maps content can change dynamically. Adjust the model temperature or instructions if extractions become noisy.
 - Respect target-site Terms of Service and rate limits. Crawl4AI's adaptive link scorer already limits excess crawling, but you can further tune `max_links` and concurrency.
-- Costs: GPT-4o extraction happens multiple times per business (homepage, contact pages, external profiles, snapshots). Monitor usage and consider batching queries.
+- Costs: LLM extraction happens multiple times per business (homepage, contact pages, external profiles, snapshots). Monitor usage and consider batching queries.
 - Deduplication merges newly discovered emails/phones/socials into existing contacts, so repeated runs enrich existing rows instead of creating duplicates.
