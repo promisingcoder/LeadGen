@@ -41,7 +41,10 @@ class SupabaseSink:
             for business in businesses
         ]
 
-        self._client.table(supabase_settings.business_table).upsert(payload)
+        try:
+            self._client.table(supabase_settings.business_table).upsert(payload).execute()
+        except Exception as exc:  # pragma: no cover - pass through for visibility
+            raise RuntimeError("Failed to upsert businesses into Supabase") from exc
 
     def upsert_contacts(self, contacts: List[ContactRecord]) -> None:
         if not contacts or not self._client:
@@ -64,7 +67,10 @@ class SupabaseSink:
             for contact in contacts
         ]
 
-        self._client.table(supabase_settings.contact_table).upsert(
-            payload,
-            on_conflict="business_name,person_name,position,source_type,snapshot_timestamp",
-        )
+        try:
+            self._client.table(supabase_settings.contact_table).upsert(
+                payload,
+                on_conflict="business_name,person_name,position,source_type,snapshot_timestamp",
+            ).execute()
+        except Exception as exc:  # pragma: no cover - pass through for visibility
+            raise RuntimeError("Failed to upsert contacts into Supabase") from exc
