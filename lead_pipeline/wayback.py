@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import json
 from datetime import datetime, timedelta
-from typing import List
+from typing import List, Optional
 from urllib.parse import quote_plus
 
+import httpx
 from crawl4ai import AsyncWebCrawler, CacheMode, CrawlerRunConfig, LLMConfig, LLMExtractionStrategy
 from pydantic import BaseModel, Field
 
@@ -29,6 +30,65 @@ class SnapshotPayload(BaseModel):
     snapshots: List[SnapshotEntry] = Field(
         description="Chronologically sorted list of snapshots worth crawling"
     )
+
+
+def _api_snapshot_lookup(target_url: str) -> List[SnapshotRecord]:
+    """Use the Wayback Machine CDX API to fetch available snapshots."""
+
+    params = {
+        "url": target_url,
+        "output": "json",
+        "fl": "timestamp,original,statuscode",
+        "filter": "statuscode:200",
+        "collapse": "digest",
+        "limit": str(max(crawl_settings.wayback_snapshot_limit * 3, 10)),
+    }
+
+    try:
+        response = httpx.get("https://web.archive.org/cdx/search/cdx", params=params, timeout=15.0)
+        response.raise_for_status()
+    except httpx.HTTPError:
+        return []
+
+    data = response.json()
+    if not data or len(data) <= 1:
+        return []
+
+    header = data[0]
+    try:
+        ts_idx = header.index("timestamp")
+        url_idx = header.index("original")
+    except ValueError:
+        return []
+
+    cutoff_year = datetime.utcnow().year - crawl_settings.wayback_years_back
+    snapshots: List[SnapshotRecord] = []
+
+    for row in data[1:]:
+        if len(row) <= max(ts_idx, url_idx):
+            continue
+        timestamp = row[ts_idx]
+        original_url = row[url_idx]
+        if not timestamp or not original_url:
+            continue
+        try:
+            year = int(timestamp[:4])
+        except (ValueError, TypeError):
+            continue
+        if year < cutoff_year:
+            continue
+        snapshots.append(
+            SnapshotRecord(
+                original_url=original_url,
+                snapshot_url=f"https://web.archive.org/web/{timestamp}/{original_url}",
+                timestamp=timestamp,
+                source_type=CrawlSource.WAYBACK,
+            )
+        )
+        if len(snapshots) >= crawl_settings.wayback_snapshot_limit:
+            break
+
+    return snapshots
 
 
 def _snapshot_strategy(target_url: str) -> LLMExtractionStrategy:
@@ -67,6 +127,10 @@ def _snapshot_strategy(target_url: str) -> LLMExtractionStrategy:
 async def discover_snapshots(target_url: str, crawler: AsyncWebCrawler) -> List[SnapshotRecord]:
     """Return prioritized Wayback snapshots for a website."""
 
+    api_snapshots = _api_snapshot_lookup(target_url)
+    if api_snapshots:
+        return api_snapshots
+
     listing_url = f"https://web.archive.org/web/*/{quote_plus(target_url)}"
     config = CrawlerRunConfig(
         cache_mode=CacheMode.ENABLED if crawl_settings.use_cache else CacheMode.BYPASS,
@@ -85,11 +149,22 @@ async def discover_snapshots(target_url: str, crawler: AsyncWebCrawler) -> List[
 
     snapshots: List[SnapshotRecord] = []
     for entry in parsed.snapshots:
+        timestamp = (entry.timestamp or "").strip()
+        original_url = (entry.original_url or "").strip()
+        snapshot_url = (entry.snapshot_url or "").strip()
+
+        if not timestamp or not original_url:
+            continue
+
+        # Ensure we point to a concrete snapshot, not the listing page.
+        if "*" in snapshot_url or timestamp not in snapshot_url:
+            snapshot_url = f"https://web.archive.org/web/{timestamp}/{original_url}"
+
         snapshots.append(
             SnapshotRecord(
-                original_url=entry.original_url,
-                snapshot_url=entry.snapshot_url,
-                timestamp=entry.timestamp,
+                original_url=original_url,
+                snapshot_url=snapshot_url,
+                timestamp=timestamp,
                 source_type=CrawlSource.WAYBACK,
             )
         )
