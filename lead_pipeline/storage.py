@@ -116,20 +116,17 @@ class SupabaseSink:
                             query = query.eq(column, value)
                         existing = query.execute()
 
+                        table_ref = self._client.table(supabase_settings.contact_table)
                         if existing.data:
-                            filters = [
-                                ("business_name", key_filters["business_name"]),
-                                ("person_name", key_filters["person_name"]),
-                                ("position", key_filters["position"]),
-                                ("source_type", key_filters["source_type"]),
-                                ("snapshot_timestamp", key_filters["snapshot_timestamp"]),
-                            ]
-                            update_builder = self._client.table(supabase_settings.contact_table)
-                            for column, value in filters:
-                                update_builder = update_builder.filter(column, "eq", value)
-                            update_builder.update(entry).execute()
+                            update_builder = table_ref.update(entry)
+                            update_builder = update_builder.eq("business_name", key_filters["business_name"])\
+                                                         .eq("person_name", key_filters["person_name"])\
+                                                         .eq("position", key_filters["position"])\
+                                                         .eq("source_type", key_filters["source_type"])\
+                                                         .eq("snapshot_timestamp", key_filters["snapshot_timestamp"])
+                            update_builder.execute()
                         else:
-                            self._client.table(supabase_settings.contact_table).insert(entry).execute()
+                            table_ref.insert(entry).execute()
                     except Exception as inner_exc:  # pragma: no cover
                         raise RuntimeError("Failed to upsert contacts into Supabase") from inner_exc
             else:  # pragma: no cover
